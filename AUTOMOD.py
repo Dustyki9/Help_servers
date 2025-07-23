@@ -19,8 +19,23 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 warnings = {}
 
 # Banned words list
-banned_words = ["poop"]
+def load_banned_patterns(file_path):
+    with open(file_path, "r", encoding="utf-8") as f:
+        words = [line.strip() for line in f if line.strip()]
 
+    leet_map = {
+        "a": "[a@4]", "e": "[e3]", "i": "[i1!|]", "o": "[o0]", "u": "[uüv]",
+        "s": "[s$5]", "t": "[t7+]", "c": "[c(\u00a2]", "k": "[k<]"
+    }
+
+    patterns = []
+    for word in words:
+        pattern = ""
+        for char in word.lower():
+            pattern += leet_map.get(char, char)
+        patterns.append(re.compile(rf"\\b{pattern}\\b", re.IGNORECASE))
+
+    return patterns
 
 @bot.event
 async def on_message(message):
@@ -28,11 +43,17 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Check if the message contains any banned words
-    if any(banned_word in message.content.lower() for banned_word in banned_words):
-        await message.delete()
-        await message.channel.send(f"{message.author.mention} NO! YOU KNOW THAT IS A NO NO WORD")
-        await issue_warning(message.author)
+    content = message.content.lower()
+
+    for pattern in BANNED_PATTERNS:
+        if pattern.search(content):
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                print(f"Could not delete message in #{message.channel}.")
+
+            # Issue warning
+            await issue_warning(message.author)
 
     # Process commands after handling the banned words
     await bot.process_commands(message)

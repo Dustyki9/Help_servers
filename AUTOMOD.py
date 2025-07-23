@@ -7,35 +7,123 @@ import asyncio
 
 ssl_context = ssl.create_default_context()
 ssl_context.set_ciphers('ALL')
+
 # Bot instance
 intents = discord.Intents.default()
 intents.messages = True  # Enable message-related events
 intents.guilds = True  # Enable guild-related events
 intents.members = True  # Enable member-related events
 intents.message_content = True
+
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Warnings storage (use a dictionary to store user warnings)
 warnings = {}
+if os.path.exists('warning.json'):
+     with open('warning.json', 'r') as f:
+        warnings = json.load(f)
+
+ZERO_WIDTH_CHARS = [
+    '\u200B', '\u200C', '\u200D', '\uFEFF'
+]
+
+def strip_zero_width(text: str) -> str:
+    """Remove zero-width characters from text"""
+    return ''.join(c for c in text if c not in ZERO_WIDTH_CHARS)
+
+def soundex(word: str) -> str:
+    word = word.upper()
+    if not word:
+        return ""
+    # Soundex mappings
+    codes = ("BFPV", "CGJKQSXZ", "DT", "L", "MN", "R")
+    soundex_code = word[0]
+
+    def char_to_code(c):
+        for i, group in enumerate(codes, 1):
+            if c in group:
+                return str(i)
+        return '0'
+
+    last_code = char_to_code(soundex_code)
+    for c in word[1:]:
+        code = char_to_code(c)
+        if code != '0' and code != last_code:
+            soundex_code += code
+        last_code = code
+
+    soundex_code = soundex_code.ljust(4, '0')
+    return soundex_code[:4]
+
+# Build banned words soundex codes for phonetic matching
+def build_soundex_map(words):
+    return {word: soundex(word) for word in words}
+
+# Emoji detection regex - detect emoji or symbols inside words
+EMOJI_PATTERN = re.compile("["
+                           "\U0001F600-\U0001F64F"  # emoticons
+                           "\U0001F300-\U0001F5FF"  # symbols & pictographs
+                           "\U0001F680-\U0001F6FF"  # transport & map symbols
+                           "\U0001F1E0-\U0001F1FF"  # flags
+                           "]+", flags=re.UNICODE)
 
 # Banned words list
-def load_banned_patterns(file_path):
-    with open(file_path, "r", encoding="utf-8") as f:
-        words = [line.strip() for line in f if line.strip()]
+#  Enhanced pattern loader to detect spaced-out or symbol-separated banned words, including leetspeak
 
-    leet_map = {
-        "a": "[a@4]", "e": "[e3]", "i": "[i1!|]", "o": "[o0]", "u": "[uüv]",
-        "s": "[s$5]", "t": "[t7+]", "c": "[c(\u00a2]", "k": "[k<]"
+leet_dict = {
+        'a': ['a', '@', '4'],
+        'b': ['b', '8'],
+        'c': ['c', '(', '<'],
+        'e': ['e', '3'],
+        'g': ['g', '9'],
+        'h': ['h', '#'],
+        'i': ['i', '1', '!', '|'],
+        'l': ['l', '1', '|'],
+        'o': ['o', '0'],
+        's': ['s', '$', '5'],
+        't': ['t', '7', '+'],
+        'z': ['z', '2'],
     }
 
-    patterns = []
-    for word in words:
-        pattern = ""
-        for char in word.lower():
-            pattern += leet_map.get(char, char)
-        patterns.append(re.compile(rf"\\b{pattern}\\b", re.IGNORECASE))
+def generate_variants(word):
+    variants = [word]
+    if not word.endswith('s'):
+        variants.append(word + 's')
+    if not word.endswith('es'):
+        variants.append(word + 'es')
+    if not word.endswith('ed'):
+        variants.append(word + 'ed')
+    if not word.endswith('ing'):
+        variants.append(word + 'ing')
+    return variants
 
-    return patterns
+import logging
+logging.basicConfig(level=logging.INFO)
+
+def build_banned_patterns(filepath):
+    patterns = []
+    words = []
+    try:
+        with open(filepath, 'r') as f:
+            for line in f:
+                word = line.strip().lower()
+                if word:
+                    words.append(word)
+                    pattern = ''
+                    for char in word:
+                        if char in leet_dict:
+                            # Removed space detection: no [\W_]*
+                            pattern += f"[{''.join(re.escape(c) for c in leet_dict[char])}]"
+                        else:
+                            pattern += f"{re.escape(char)}"
+                    patterns.append(re.compile(pattern, re.IGNORECASE))
+    except FileNotFoundError:
+        print(f"{filepath} not found. No banned words loaded.")
+    return patterns, words
+
+BANNED_PATTERNS, BANNED_WORDS = build_banned_patterns("BANNED_WORDS.txt")
+BANNED_SOUNDEX_MAP = build_soundex_map(BANNED_WORDS)
+MOD_LOG_CHANNEL_NAME = "message-logs"
 
 @bot.event
 async def on_message(message):
@@ -43,41 +131,79 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    content = message.content.lower()
+    # Strip zero-width chars before processing
+    content = strip_zero_width(message.content.lower())
 
+    # Remove emojis for word extraction (only for phonetic check)
+    content_no_emoji = EMOJI_PATTERN.sub('', content)
+
+    # 1. Check regex banned patterns (with leetspeak + spacing)
     for pattern in BANNED_PATTERNS:
         if pattern.search(content):
             try:
                 await message.delete()
             except discord.Forbidden:
-                print(f"Could not delete message in #{message.channel}.")
-
-            # Issue warning
+                logging.warning(f"Could not delete message in #{message.channel}.")
             await issue_warning(message.author)
+            return
 
-    # Process commands after handling the banned words
+    # 2. Phonetic check: split words and soundex-compare to banned words
+    words = re.findall(r'\w+', content_no_emoji)
+    for w in words:
+        w_soundex = soundex(w)
+        if w_soundex in BANNED_SOUNDEX_MAP.values():
+            # Matched phonetic soundex with a banned word
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                logging.warning(f"Could not delete message in #{message.channel}.")
+            await issue_warning(message.author)
+            return
+
     await bot.process_commands(message)
-
-
 async def issue_warning(user):
-    # Issue a warning and store it in the warnings dictionary
-    if user.id not in warnings:
-        warnings[user.id] = 0
-    warnings[user.id] += 1
+    user_id_str = str(user.id)  # JSON keys must be strings
+    if user_id_str not in warnings:
+        warnings[user_id_str] = 0
+    warnings[user_id_str] += 1
 
-    # Write warnings to a file
     with open("warnings.json", "w") as f:
-        json.dump(warnings, f)
+        json.dump(warnings, f, indent=4)
 
-    # Notify the user about their warning
-    await user.send(f"You have received a warning! Total warnings: {warnings[user.id]}")
+    try:
+        await user.send(f"You have received a warning! Total warnings: {warnings[user_id_str]}")
+    except discord.Forbidden:
+        print(f"Could not send DM to {user.name}.")
+
+@bot.command()
+async def test_banned(ctx, *, text: str):
+    """Test banned words detection on arbitrary text."""
+    stripped = strip_zero_width(text.lower())
+    stripped_no_emoji = EMOJI_PATTERN.sub('', stripped)
+
+    # Check regex patterns
+    regex_hits = [p.pattern for p in BANNED_PATTERNS if p.search(stripped)]
+
+    # Check phonetic hits
+    words = re.findall(r'\w+', stripped_no_emoji)
+    phonetic_hits = []
+    for w in words:
+        w_soundex = soundex(w)
+        for banned_word, banned_soundex in BANNED_SOUNDEX_MAP.items():
+            if w_soundex == banned_soundex:
+                phonetic_hits.append(banned_word)
+
+    hits = set(regex_hits + phonetic_hits)
+    if hits:
+        await ctx.send(f"Detected banned words or phonetic matches: {', '.join(hits)}")
+    else:
+        await ctx.send("No banned words detected.")
+
+
 @bot.event
 async def on_message_delete(message):
-    # Get the log channel (make sure it exists)
-    log_channel = discord.utils.get(message.guild.text_channels, name="message-logs")
-
+    log_channel = discord.utils.get(message.guild.text_channels, name=MOD_LOG_CHANNEL_NAME)
     if log_channel:
-        # Create an embed to log the deleted message
         embed = discord.Embed(
             title="Message Deleted",
             description=f"Message deleted in {message.channel.mention}",
@@ -90,60 +216,47 @@ async def on_message_delete(message):
 
 @bot.command()
 async def mute(ctx, member: discord.Member, duration: int):
-    # Check if the bot has the necessary permissions to manage roles
     if not ctx.guild.me.guild_permissions.manage_roles:
         await ctx.send("I don't have permission to manage roles!")
         return
 
-    # Check if the bot's role is high enough to mute
     muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
-    if muted_role and muted_role.position >= ctx.guild.me.top_role.position:
+    if not muted_role:
+        muted_role = await ctx.guild.create_role(name="Muted", reason="Mute role creation")
+        await muted_role.edit(permissions=discord.Permissions(send_messages=False))
+
+    if muted_role.position >= ctx.guild.me.top_role.position:
         await ctx.send("I cannot mute members higher than or equal to my role.")
         return
 
-    if not muted_role:
-        # If the "Muted" role doesn't exist, create it
-        muted_role = await ctx.guild.create_role(name="Muted", reason="Mute role creation")
-
-        # Set the role's permissions to deny send messages
-        await muted_role.edit(permissions=discord.Permissions(send_messages=False))
-
-    # Add the muted role to the member
     await member.add_roles(muted_role)
     await ctx.send(f"{member.mention} has been muted for {duration} minutes.")
 
-    # Unmute the user after the specified duration
-    await asyncio.sleep(duration * 60)  # Convert duration to seconds
+    await asyncio.sleep(duration * 60)
     await member.remove_roles(muted_role)
     await ctx.send(f"{member.mention} has been unmuted.")
-
-    # Delete the command message (the one the user typed)
     await ctx.message.delete()
 
 #Viktor was here
 @bot.command()
 async def unmute(ctx, member: discord.Member):
-    # Check if the bot has the necessary permissions to manage roles
     if not ctx.guild.me.guild_permissions.manage_roles:
         await ctx.send("I don't have permission to manage roles!")
         return
 
-    # Check if the bot's role is high enough to unmute
     muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
-    if muted_role and muted_role.position >= ctx.guild.me.top_role.position:
-        await ctx.send("I cannot unmute members higher than or equal to my role.")
-        return
-
-    if muted_role not in member.roles:
+    if not muted_role or muted_role not in member.roles:
         await ctx.send(f"{member.mention} is not muted.")
         return
 
-    # Remove the "Muted" role from the member
+    if muted_role.position >= ctx.guild.me.top_role.position:
+        await ctx.send("I cannot unmute members higher than or equal to my role.")
+        return
+
     await member.remove_roles(muted_role)
     await ctx.send(f"{member.mention} has been unmuted.")
-
-    # Delete the command message
     await ctx.message.delete()
+
 
 @bot.command()
 async def add_role(ctx, member: discord.Member, role: discord.Role):

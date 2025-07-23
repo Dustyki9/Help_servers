@@ -120,7 +120,7 @@ async def mute(ctx, member: discord.Member, duration: int):
     # Delete the command message (the one the user typed)
     await ctx.message.delete()
 
-
+#Viktor was here
 @bot.command()
 async def unmute(ctx, member: discord.Member):
     # Check if the bot has the necessary permissions to manage roles

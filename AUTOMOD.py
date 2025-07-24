@@ -13,6 +13,15 @@ from rapidfuzz import fuzz
 ssl_context = ssl.create_default_context()
 ssl_context.set_ciphers('ALL')
 
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
 # Bot instance
 intents = discord.Intents.default()
 intents.messages = True  # Enable message-related events

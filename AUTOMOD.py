@@ -9,6 +9,8 @@ import sys
 from discord import app_commands
 from discord.ext import commands
 from rapidfuzz import fuzz
+from dotenv import load_dotenv
+
 
 ssl_context = ssl.create_default_context()
 ssl_context.set_ciphers('ALL')

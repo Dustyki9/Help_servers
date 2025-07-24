@@ -1,0 +1,32 @@
+# created by virtualenv automatically
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environment
+.venv/
+env/
+ENV/
+venv/
+pip-selfcheck.json
+
+# VSCode / PyCharm / IDEs
+.idea/
+.vscode/
+
+# Secrets
+.env
+*.secret
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Build artifacts
+dist/
+build/
+*.egg-info/

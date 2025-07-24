@@ -24,6 +24,12 @@ GUILD_ID = 1170420782313259179  #South of Heaven 2.1.7
 guild = discord.Object(id=GUILD_ID)
 
 
+def is_admin():
+    def predicate(interaction: discord.Interaction) -> bool:
+        return interaction.user.guild_permissions.administrator
+    return app_commands.check(predicate)
+
+
 bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree  #Shortcut to access app_commands
 
@@ -31,6 +37,7 @@ tree = bot.tree  #Shortcut to access app_commands
 #Vik's Shiiiet Slash commands.
 
 @tree.command(name="timeout", description="Time-Out a member for a specified duration", guild=guild)
+@is_admin()
 @app_commands.describe(
     member="The member to time-out",
     duration="Time-Out duration in minutes (1-10080)",
@@ -63,6 +70,7 @@ async def timeout(
 
 
 @tree.command(name="untimeout", description="Remove a Time-Out from a member.", guild=guild)
+@is_admin()
 @app_commands.describe(
     member="The member to remove the Time-Out from",
     reason="Reason for the Removal"
@@ -84,6 +92,112 @@ async def untimeout(
         await interaction.response.send_message("I don't have permission to Un-Time-Out that member.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"An error has occurred: {e}", ephemeral=True)
+
+@tree.command(name="mute", description="Mute a member for a number of minutes", guild=guild)
+@is_admin()
+@app_commands.describe(member="Member to mute", duration="Mute duration in minutes")
+async def mute(interaction: discord.Interaction, member: discord.Member, duration: int):
+    if not interaction.guild.me.guild_permissions.manage_roles:
+        await interaction.response.send_message("I don't have permission to manage roles!", ephemeral=True)
+        return
+
+    muted_role = discord.utils.get(interaction.guild.roles, name="Muted")
+    if not muted_role:
+        muted_role = await interaction.guild.create_role(name="Muted", reason="Mute role creation")
+        await muted_role.edit(permissions=discord.Permissions(send_messages=False))
+
+    if muted_role.position >= interaction.guild.me.top_role.position:
+        await interaction.response.send_message("I cannot mute members above or equal to my role.", ephemeral=True)
+        return
+
+    await member.add_roles(muted_role)
+    await interaction.response.send_message(f"{member.mention} has been muted for {duration} minutes.")
+
+    await asyncio.sleep(duration * 60)
+    await member.remove_roles(muted_role)
+    try:
+        await interaction.channel.send(f"{member.mention} has been unmuted.")
+    except Exception:
+        pass
+
+
+@tree.command(name="unmute", description="Unmute a member", guild=guild)
+@is_admin()
+@app_commands.describe(member="Member to unmute")
+async def unmute(interaction: discord.Interaction, member: discord.Member):
+    if not interaction.guild.me.guild_permissions.manage_roles:
+        await interaction.response.send_message("I don't have permission to manage roles!", ephemeral=True)
+        return
+
+    muted_role = discord.utils.get(interaction.guild.roles, name="Muted")
+    if not muted_role or muted_role not in member.roles:
+        await interaction.response.send_message(f"{member.mention} is not muted.", ephemeral=True)
+        return
+
+    if muted_role.position >= interaction.guild.me.top_role.position:
+        await interaction.response.send_message("I cannot unmute members above or equal to my role.", ephemeral=True)
+        return
+
+    await member.remove_roles(muted_role)
+    await interaction.response.send_message(f"{member.mention} has been unmuted.")
+
+
+@tree.command(name="add_role", description="Add a role to a member", guild=guild)
+@is_admin()
+@app_commands.describe(member="Member to add the role to", role="Role to assign")
+async def add_role(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    if not interaction.guild.me.guild_permissions.manage_roles:
+        await interaction.response.send_message("I don't have permission to manage roles!", ephemeral=True)
+        return
+
+    if role.position >= interaction.guild.me.top_role.position:
+        await interaction.response.send_message("I can't assign roles higher than or equal to my top role.", ephemeral=True)
+        return
+
+    await member.add_roles(role)
+    await interaction.response.send_message(f"{role.name} role has been added to {member.mention}.")
+
+
+@tree.command(name="remove_role", description="Remove a role from a member", guild=guild)
+@is_admin()
+@app_commands.describe(member="Member to remove the role from", role="Role to remove")
+async def remove_role(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    if not interaction.guild.me.guild_permissions.manage_roles:
+        await interaction.response.send_message("I don't have permission to manage roles!", ephemeral=True)
+        return
+
+    if role.position >= interaction.guild.me.top_role.position:
+        await interaction.response.send_message("I can't remove roles higher than or equal to my top role.", ephemeral=True)
+        return
+
+    await member.remove_roles(role)
+    await interaction.response.send_message(f"{role.name} role has been removed from {member.mention}.")
+
+
+@tree.command(name="test_banned", description="Test a message for banned words", guild=guild)
+@is_admin()
+@app_commands.describe(text="Text to check")
+async def test_banned(interaction: discord.Interaction, text: str):
+    stripped = strip_zero_width(text.lower())
+    stripped_no_emoji = EMOJI_PATTERN.sub('', stripped)
+
+    # Check regex patterns
+    regex_hits = [p.pattern for p in BANNED_PATTERNS if p.search(stripped)]
+
+    # Check phonetic hits
+    words = re.findall(r'\w+', stripped_no_emoji)
+    phonetic_hits = []
+    for w in words:
+        w_soundex = soundex(w)
+        for banned_word, banned_soundex in BANNED_SOUNDEX_MAP.items():
+            if w_soundex == banned_soundex:
+                phonetic_hits.append(banned_word)
+
+    hits = set(regex_hits + phonetic_hits)
+    if hits:
+        await interaction.response.send_message(f"Detected banned words or phonetic matches: {', '.join(hits)}")
+    else:
+        await interaction.response.send_message("No banned words detected.")
 
 
 # Warnings storage (use a dictionary to store user warnings)
@@ -284,100 +398,6 @@ async def test_banned(ctx, *, text: str):
 
 
 @bot.event
-async def on_message_delete(message):
-    log_channel = discord.utils.get(message.guild.text_channels, name=MOD_LOG_CHANNEL_NAME)
-    if log_channel:
-        embed = discord.Embed(
-            title="Message Deleted",
-            description=f"Message deleted in {message.channel.mention}",
-            color=discord.Color.red()
-        )
-        embed.add_field(name="Author", value=message.author.mention)
-        embed.add_field(name="Content", value=message.content or "No content")
-        embed.set_footer(text=f"Message ID: {message.id}")
-        await log_channel.send(embed=embed)
-
-
-@bot.command()
-async def mute(ctx, member: discord.Member, duration: int):
-    if not ctx.guild.me.guild_permissions.manage_roles:
-        await ctx.send("I don't have permission to manage roles!")
-        return
-
-    muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
-    if not muted_role:
-        muted_role = await ctx.guild.create_role(name="Muted", reason="Mute role creation")
-        await muted_role.edit(permissions=discord.Permissions(send_messages=False))
-
-    if muted_role.position >= ctx.guild.me.top_role.position:
-        await ctx.send("I cannot mute members higher than or equal to my role.")
-        return
-
-    await member.add_roles(muted_role)
-    await ctx.send(f"{member.mention} has been muted for {duration} minutes.")
-
-    await asyncio.sleep(duration * 60)
-    await member.remove_roles(muted_role)
-    await ctx.send(f"{member.mention} has been unmuted.")
-    await ctx.message.delete()
-
-
-#Viktor was here
-@bot.command()
-async def unmute(ctx, member: discord.Member):
-    if not ctx.guild.me.guild_permissions.manage_roles:
-        await ctx.send("I don't have permission to manage roles!")
-        return
-
-    muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
-    if not muted_role or muted_role not in member.roles:
-        await ctx.send(f"{member.mention} is not muted.")
-        return
-
-    if muted_role.position >= ctx.guild.me.top_role.position:
-        await ctx.send("I cannot unmute members higher than or equal to my role.")
-        return
-
-    await member.remove_roles(muted_role)
-    await ctx.send(f"{member.mention} has been unmuted.")
-    await ctx.message.delete()
-
-
-@bot.command()
-async def add_role(ctx, member: discord.Member, role: discord.Role):
-    # Check if the bot has the necessary permissions to manage roles
-    if not ctx.guild.me.guild_permissions.manage_roles:
-        await ctx.send("I don't have permission to manage roles!")
-        return
-
-    # Check if the bot's role is high enough to add the requested role
-    if role.position >= ctx.guild.me.top_role.position:
-        await ctx.send("I cannot assign roles higher than or equal to my role.")
-        return
-
-    # Add the role to the member
-    await member.add_roles(role)
-    await ctx.send(f"{role.name} role has been added to {member.mention}")
-
-
-@bot.command()
-async def remove_role(ctx, member: discord.Member, role: discord.Role):
-    # Check if the bot has the necessary permissions to manage roles
-    if not ctx.guild.me.guild_permissions.manage_roles:
-        await ctx.send("I don't have permission to manage roles!")
-        return
-
-    # Check if the bot's role is high enough to remove the requested role
-    if role.position >= ctx.guild.me.top_role.position:
-        await ctx.send("I cannot remove roles higher than or equal to my role.")
-        return
-
-    # Remove the role from the member
-    await member.remove_roles(role)
-    await ctx.send(f"{role.name} role has been removed from {member.mention}")
-
-
-@bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name} ({bot.user.id})')
     await bot.change_presence(activity=discord.Game(name="Moderating the server!"))
@@ -392,4 +412,4 @@ async def on_ready():
         print(f" Failed to sync commands: {e}")
 
 
-bot.run('YOUR_BOT_TOKEN')
+bot.run('MTM5NzY1OTc0MzQ5Mjc2NzgzNg.GZok-E.DzCQbL8k-IT3i4GWbNFUdIN9zEoJUqcngHyeNQ')

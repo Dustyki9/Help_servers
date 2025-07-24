@@ -1,20 +1,52 @@
-import ssl
 import os
 import discord
-import json
 import asyncio
 import re
 import datetime
 import sys
+import ssl
+import sqlite3
 from discord import app_commands
 from discord.ext import commands
 from rapidfuzz import fuzz
-from dotenv import load_dotenv
+from datetime import timezone
+
+
+def load_banned_words(filepath="BANNED_WORDS.txt"):
+    try:
+        with open("BANNED_WORDS.txt", "r", encoding="utf-8") as file:
+            return [line.strip().lower() for line in file if line.strip()]
+    except FileNotFoundError:
+        print("BANNED_WORDS.txt not found. Fix your shit cuh.")
+        return[]
+
+banned_words = load_banned_words()
+conn = sqlite3.connect('warnings.db')
+c = conn.cursor()
+c.execute('''
+          CREATE TABLE IF NOT EXISTS warnings (
+                                                  user_id TEXT,
+                                                  reason TEXT,
+                                                  timestamp TEXT
+          )
+          ''')
+conn.commit()
 
 
 ssl_context = ssl.create_default_context()
 ssl_context.set_ciphers('ALL')
 
+AUTO_TIMEOUT_THRESHOLD = 3  # Number of warnings to trigger timeout
+AUTO_TIMEOUT_DURATION_MINUTES = 4  # Duration of timeout in minutes
+
+def load_warnings_from_db():
+    c.execute('SELECT user_id, COUNT(*) FROM warnings GROUP BY user_id')
+    rows = c.fetchall()
+    for user_id, count in rows:
+        warnings[user_id] = count
+
+warnings = {}
+load_warnings_from_db()
 
 def resource_path(relative_path):
     try:
@@ -22,6 +54,19 @@ def resource_path(relative_path):
     except AttributeError:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+
+def log_warning(user_id, reason):
+    timestamp = datetime.datetime.now().isoformat()
+    c.execute('INSERT INTO warnings (user_id, reason, timestamp) VALUES (?, ?, ?)', (user_id, reason, timestamp))
+    conn.commit()
+
+
+def get_warning_count(user_id):
+    c.execute('SELECT COUNT(*) FROM warnings WHERE user_id = ?', (user_id,))
+    return c.fetchone()[0]
+    return results[0] if results else 0
+
 
 
 # Bot instance
@@ -32,7 +77,7 @@ intents.members = True  # Enable member-related events
 intents.message_content = True
 
 
-GUILD_ID = #Replace me with your GUILD ID
+GUILD_ID = #GUILD ID GO HERE
 guild = discord.Object(id=GUILD_ID) #<----DO NOT CHANGE NO NEED.
 
 
@@ -212,11 +257,39 @@ async def test_banned(interaction: discord.Interaction, text: str):
         await interaction.response.send_message("No banned words detected.")
 
 
-# Warnings storage (use a dictionary to store user warnings)
-warnings = {}
-if os.path.exists('warning.json'):
-    with open('warning.json', 'r') as f:
-        warnings = json.load(f)
+@tree.command(name="warn", description="Warn a user", guild=guild)
+@is_admin()
+@app_commands.describe(member="Member to warn", reason="Reason for warning")
+async def warn_user(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    # Log the warning in DB
+    log_warning(str(member.id), reason)
+    count = get_warning_count(str(member.id))
+
+    # Issue warning (this function probably updates in-memory dict + sends DM)
+    await issue_warning(member, reason=reason)
+
+    # Respond to command
+    await interaction.response.send_message(
+        f"⚠️ WARNED {member.mention} for: {reason}\nThey now have **{count} warning(s)**"
+    )
+
+    # Try to DM the member
+    try:
+        await member.send(f"You were warned in {interaction.guild.name} for: {reason}")
+    except discord.Forbidden:
+       pass
+
+@tree.command(name="reload", description="Reload Banned word database.", guild=guild)
+@is_admin()
+async def reload_banned_words(interaction: discord.Interaction):
+    global BANNED_PATTERNS, BANNED_WORDS, BANNED_SOUNDEX_MAP
+
+    banned_words = load_banned_words()  # no argument here
+    BANNED_PATTERNS, _ = build_banned_patterns("BANNED_WORDS.txt")
+    BANNED_SOUNDEX_MAP = build_soundex_map(banned_words)
+    print(f"[Reload] Loaded {len(banned_words)} banned words.")
+    await interaction.response.send_message("Banned words database reloaded.")
+
 
 ZERO_WIDTH_CHARS = [
     '\u200B', '\u200C', '\u200D', '\uFEFF'
@@ -266,7 +339,6 @@ EMOJI_PATTERN = re.compile("["
                            "\U0001F1E0-\U0001F1FF"  # flags
                            "]+", flags=re.UNICODE)
 
-# Banned words list
 #  Enhanced pattern loader to detect spaced-out or symbol-separated banned words, including leetspeak
 
 leet_dict = {
@@ -348,7 +420,7 @@ async def on_message(message):
                 await message.delete()
             except discord.Forbidden:
                 logging.warning(f"Could not delete message in #{message.channel}.")
-            await issue_warning(message.author)
+            await issue_warning(message.author, message=message, reason="Banned word detected")
             return
 
     # 2. Fuzzy check for banned words
@@ -369,20 +441,57 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-async def issue_warning(user):
-    user_id_str = str(user.id)  # JSON keys must be strings
-    if user_id_str not in warnings:
-        warnings[user_id_str] = 0
-    warnings[user_id_str] += 1
+async def issue_warning(user, message=None, reason="No reason provided"):
+    user_id_str = str(user.id)
+    log_warning(user_id_str, reason)
+    total_warnings = get_warning_count(user_id_str)
 
-    with open("warnings.json", "w") as f:
-        json.dump(warnings, f, indent=4)
+
+    # Send log message to log channel
+    if message and message.guild:
+        log_channel = discord.utils.get(message.guild.channels, name="message-logs")
+        if log_channel:
+            embed = discord.Embed(
+                title="Message Deleted and User Warned",
+                color=discord.Color.red(),
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.add_field(name="User", value=f"{user.mention} (ID: {user.id})", inline=False)
+            embed.add_field(name="Total Warnings", value=str(total_warnings), inline=False)
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Deleted Message", value=message.content or "[No Content]", inline=False)
+            embed.add_field(name="Channel", value=message.channel.mention, inline=False)
+            embed.set_footer(text=f"Message ID: {message.id}")
+            await log_channel.send(embed=embed)
 
     try:
-        await user.send(f"You have received a warning! Total warnings: {warnings[user_id_str]}")
+        await user.send(f"You have received a warning! Total warnings: {total_warnings}\nReason: {reason}")
     except discord.Forbidden:
         print(f"Could not send DM to {user.name}.")
 
+    # Apply automatic timeout if warning threshold is met
+    if total_warnings >= AUTO_TIMEOUT_THRESHOLD:
+        guild = message.guild if message else None
+        if guild:
+            member = guild.get_member(user.id)
+            if member:
+                timeout_duration = datetime.timedelta(minutes=AUTO_TIMEOUT_DURATION_MINUTES)
+                try:
+                    await member.timeout(timeout_duration, reason=f"Reached {AUTO_TIMEOUT_THRESHOLD} warnings")
+
+                    if log_channel:
+                        await log_channel.send(
+                            f"{member.mention} has been automatically timed out for {AUTO_TIMEOUT_DURATION_MINUTES} minutes after {total_warnings} warnings."
+                        )
+
+                    try:
+                        await user.send(
+                            f"You have been timed out for {AUTO_TIMEOUT_DURATION_MINUTES} minutes because you reached {AUTO_TIMEOUT_THRESHOLD} warnings."
+                        )
+                    except discord.Forbidden:
+                        pass
+                except discord.Forbidden:
+                    print(f"Failed to timeout {user.name} - missing permissions.")
 
 @bot.command()
 async def test_banned(ctx, *, text: str):
@@ -416,11 +525,11 @@ async def on_ready():
 
     try:
         print("Syncing slash commands..")
-        synced = await bot.tree.sync(guild=discord.Object(id=YOUR_GUILD_ID))
+        synced = await bot.tree.sync(guild=discord.Object(id=#GUILD ID HERE))
         print(f"Synced {len(synced)} slash command(s):")
         for cmd in synced:
             print(f" - {cmd.name}: {cmd.description}")
     except Exception as e:
         print(f" Failed to sync commands: {e}")
-load_dotenv()
-bot.run(os.getenv("DISCORD_BOT_TOKEN"))
+
+bot.run(#PUT TOKEN HERE )

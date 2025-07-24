@@ -412,4 +412,4 @@ async def on_ready():
         print(f" Failed to sync commands: {e}")
 
 
-bot.run('MTM5NzY1OTc0MzQ5Mjc2NzgzNg.GZok-E.DzCQbL8k-IT3i4GWbNFUdIN9zEoJUqcngHyeNQ')
+bot.run('YOUR_BOT_TOKEN')

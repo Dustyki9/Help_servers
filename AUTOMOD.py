@@ -30,8 +30,8 @@ intents.members = True  # Enable member-related events
 intents.message_content = True
 
 
-GUILD_ID = 1170420782313259179  #South of Heaven 2.1.7
-guild = discord.Object(id=GUILD_ID)
+GUILD_ID = #Replace me with your GUILD ID
+guild = discord.Object(id=GUILD_ID) #<----DO NOT CHANGE NO NEED.
 
 
 def is_admin():
@@ -414,7 +414,7 @@ async def on_ready():
 
     try:
         print("Syncing slash commands..")
-        synced = await bot.tree.sync(guild=discord.Object(id=1170420782313259179))
+        synced = await bot.tree.sync(guild=discord.Object(id=YOUR_GUILD_ID))
         print(f"Synced {len(synced)} slash command(s):")
         for cmd in synced:
             print(f" - {cmd.name}: {cmd.description}")

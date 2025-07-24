@@ -420,3 +420,5 @@ async def on_ready():
             print(f" - {cmd.name}: {cmd.description}")
     except Exception as e:
         print(f" Failed to sync commands: {e}")
+load_dotenv()
+bot.run(os.getenv("DISCORD_BOT_TOKEN"))

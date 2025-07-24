@@ -89,7 +89,7 @@ async def untimeout(
 # Warnings storage (use a dictionary to store user warnings)
 warnings = {}
 if os.path.exists('warning.json'):
-     with open('warning.json', 'r') as f:
+    with open('warning.json', 'r') as f:
         warnings = json.load(f)
 
 ZERO_WIDTH_CHARS = [
@@ -144,19 +144,19 @@ EMOJI_PATTERN = re.compile("["
 #  Enhanced pattern loader to detect spaced-out or symbol-separated banned words, including leetspeak
 
 leet_dict = {
-        'a': ['a', '@', '4'],
-        'b': ['b', '8'],
-        'c': ['c', '(', '<'],
-        'e': ['e', '3'],
-        'g': ['g', '9'],
-        'h': ['h', '#'],
-        'i': ['i', '1', '!', '|'],
-        'l': ['l', '1', '|'],
-        'o': ['o', '0'],
-        's': ['s', '$', '5'],
-        't': ['t', '7', '+'],
-        'z': ['z', '2'],
-    }
+    'a': ['a', '@', '4'],
+    'b': ['b', '8'],
+    'c': ['c', '(', '<'],
+    'e': ['e', '3'],
+    'g': ['g', '9'],
+    'h': ['h', '#'],
+    'i': ['i', '1', '!', '|'],
+    'l': ['l', '1', '|'],
+    'o': ['o', '0'],
+    's': ['s', '$', '5'],
+    't': ['t', '7', '+'],
+    'z': ['z', '2'],
+}
 
 
 def generate_variants(word):

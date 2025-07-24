@@ -5,6 +5,7 @@ import json
 import asyncio
 import re
 import datetime
+import sys
 from discord import app_commands
 from discord.ext import commands
 from rapidfuzz import fuzz

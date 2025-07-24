@@ -1,9 +1,13 @@
 import ssl
 import os
 import discord
-from discord.ext import commands
 import json
 import asyncio
+import re
+import datetime
+from discord import app_commands
+from discord.ext import commands
+from rapidfuzz import fuzz
 
 ssl_context = ssl.create_default_context()
 ssl_context.set_ciphers('ALL')
@@ -15,7 +19,72 @@ intents.guilds = True  # Enable guild-related events
 intents.members = True  # Enable member-related events
 intents.message_content = True
 
+
+GUILD_ID = 1170420782313259179  #South of Heaven 2.1.7
+guild = discord.Object(id=GUILD_ID)
+
+
 bot = commands.Bot(command_prefix='!', intents=intents)
+tree = bot.tree  #Shortcut to access app_commands
+
+
+#Vik's Shiiiet Slash commands.
+
+@tree.command(name="timeout", description="Time-Out a member for a specified duration", guild=guild)
+@app_commands.describe(
+    member="The member to time-out",
+    duration="Time-Out duration in minutes (1-10080)",
+    reason="Reason for the Time-Out"
+)
+async def timeout(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    duration: int,
+    reason: str = "No reason provided"
+):
+    if not interaction.user.guild_permissions.moderate_members:
+        await interaction.response.send_message("You don't have permission to Time-Out Members.", ephemeral=True)
+        return
+
+    if duration < 1 or duration > 10080:
+        await interaction.response.send_message("Duration must be between 1-10080 minutes (7 days)", ephemeral=True)
+        return
+
+    try:
+        timeout_duration = datetime.timedelta(minutes=duration)
+        await member.timeout(timeout_duration, reason=reason)
+        until_time = discord.utils.format_dt(discord.utils.utcnow() + timeout_duration, style='R')
+        await interaction.response.send_message(
+            f"{member.mention} has been timed out for {duration} minute(s). Reason: {reason}")
+    except discord.Forbidden:
+        await interaction.response.send_message("I don't have permission to Time-Out that member.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
+
+
+@tree.command(name="untimeout", description="Remove a Time-Out from a member.", guild=guild)
+@app_commands.describe(
+    member="The member to remove the Time-Out from",
+    reason="Reason for the Removal"
+)
+async def untimeout(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str = "No reason provided"
+):
+    if not interaction.user.guild_permissions.moderate_members:
+        await interaction.response.send_message("You don't have permission to Un-Time-Out Members.", ephemeral=True)
+        return
+
+    try:
+        await member.timeout(None, reason=reason)
+        await interaction.response.send_message(
+            f"Time-Out has been removed from {member.mention}. Reason: {reason}")
+    except discord.Forbidden:
+        await interaction.response.send_message("I don't have permission to Un-Time-Out that member.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"An error has occurred: {e}", ephemeral=True)
+
 
 # Warnings storage (use a dictionary to store user warnings)
 warnings = {}
@@ -27,9 +96,11 @@ ZERO_WIDTH_CHARS = [
     '\u200B', '\u200C', '\u200D', '\uFEFF'
 ]
 
+
 def strip_zero_width(text: str) -> str:
     """Remove zero-width characters from text"""
     return ''.join(c for c in text if c not in ZERO_WIDTH_CHARS)
+
 
 def soundex(word: str) -> str:
     word = word.upper()
@@ -55,9 +126,11 @@ def soundex(word: str) -> str:
     soundex_code = soundex_code.ljust(4, '0')
     return soundex_code[:4]
 
+
 # Build banned words soundex codes for phonetic matching
 def build_soundex_map(words):
     return {word: soundex(word) for word in words}
+
 
 # Emoji detection regex - detect emoji or symbols inside words
 EMOJI_PATTERN = re.compile("["
@@ -85,6 +158,7 @@ leet_dict = {
         'z': ['z', '2'],
     }
 
+
 def generate_variants(word):
     variants = [word]
     if not word.endswith('s'):
@@ -97,8 +171,11 @@ def generate_variants(word):
         variants.append(word + 'ing')
     return variants
 
+
 import logging
+
 logging.basicConfig(level=logging.INFO)
+
 
 def build_banned_patterns(filepath):
     patterns = []
@@ -121,25 +198,26 @@ def build_banned_patterns(filepath):
         print(f"{filepath} not found. No banned words loaded.")
     return patterns, words
 
+
 BANNED_PATTERNS, BANNED_WORDS = build_banned_patterns("BANNED_WORDS.txt")
 BANNED_SOUNDEX_MAP = build_soundex_map(BANNED_WORDS)
 MOD_LOG_CHANNEL_NAME = "message-logs"
 
+
 @bot.event
 async def on_message(message):
-    # Ignore messages from the bot itself
     if message.author == bot.user:
         return
 
     # Strip zero-width chars before processing
     content = strip_zero_width(message.content.lower())
-
-    # Remove emojis for word extraction (only for phonetic check)
+    # Remove emojis for word extraction (only for fuzzy check)
     content_no_emoji = EMOJI_PATTERN.sub('', content)
 
     # 1. Check regex banned patterns (with leetspeak + spacing)
     for pattern in BANNED_PATTERNS:
         if pattern.search(content):
+            logging.info(f"Regex matched pattern: {pattern.pattern} on message: {content}")
             try:
                 await message.delete()
             except discord.Forbidden:
@@ -147,20 +225,24 @@ async def on_message(message):
             await issue_warning(message.author)
             return
 
-    # 2. Phonetic check: split words and soundex-compare to banned words
+    # 2. Fuzzy check for banned words
+    FUZZY_THRESHOLD = 80  # Adjust threshold as needed (0-100)
     words = re.findall(r'\w+', content_no_emoji)
     for w in words:
-        w_soundex = soundex(w)
-        if w_soundex in BANNED_SOUNDEX_MAP.values():
-            # Matched phonetic soundex with a banned word
-            try:
-                await message.delete()
-            except discord.Forbidden:
-                logging.warning(f"Could not delete message in #{message.channel}.")
-            await issue_warning(message.author)
-            return
+        for banned_word in BANNED_WORDS:
+            similarity = fuzz.ratio(w, banned_word)
+            if similarity >= FUZZY_THRESHOLD:
+                logging.info(f"Fuzzy match: '{w}' ~ '{banned_word}' (score: {similarity})")
+                try:
+                    await message.delete()
+                except discord.Forbidden:
+                    logging.warning(f"Could not delete message in #{message.channel}.")
+                await issue_warning(message.author)
+                return
 
     await bot.process_commands(message)
+
+
 async def issue_warning(user):
     user_id_str = str(user.id)  # JSON keys must be strings
     if user_id_str not in warnings:
@@ -174,6 +256,7 @@ async def issue_warning(user):
         await user.send(f"You have received a warning! Total warnings: {warnings[user_id_str]}")
     except discord.Forbidden:
         print(f"Could not send DM to {user.name}.")
+
 
 @bot.command()
 async def test_banned(ctx, *, text: str):
@@ -214,6 +297,7 @@ async def on_message_delete(message):
         embed.set_footer(text=f"Message ID: {message.id}")
         await log_channel.send(embed=embed)
 
+
 @bot.command()
 async def mute(ctx, member: discord.Member, duration: int):
     if not ctx.guild.me.guild_permissions.manage_roles:
@@ -236,6 +320,7 @@ async def mute(ctx, member: discord.Member, duration: int):
     await member.remove_roles(muted_role)
     await ctx.send(f"{member.mention} has been unmuted.")
     await ctx.message.delete()
+
 
 #Viktor was here
 @bot.command()
@@ -297,5 +382,14 @@ async def on_ready():
     print(f'Logged in as {bot.user.name} ({bot.user.id})')
     await bot.change_presence(activity=discord.Game(name="Moderating the server!"))
 
+    try:
+        print("Syncing slash commands..")
+        synced = await bot.tree.sync(guild=discord.Object(id=1170420782313259179))
+        print(f"Synced {len(synced)} slash command(s):")
+        for cmd in synced:
+            print(f" - {cmd.name}: {cmd.description}")
+    except Exception as e:
+        print(f" Failed to sync commands: {e}")
 
-bot.run('TOKEN')
+
+bot.run('YOUR_BOT_TOKEN')
